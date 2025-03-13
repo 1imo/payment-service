@@ -2,9 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { stripe } from './config/stripe';
-import { pool } from './config/database';
 import { PaymentRepository } from './repositories/PaymentRepository';
-import { PaymentService } from './services/PaymentService';
+import { serviceAuth } from './middleware/serviceAuth';
+import { pool, authPool, orderingPool } from './config/database';
 
 dotenv.config();
 
@@ -14,34 +14,36 @@ app.use(express.json());
 app.use(cors());
 
 // Initialize dependencies
-const paymentRepository = new PaymentRepository(pool);
-const paymentService = new PaymentService(paymentRepository);
+const paymentRepository = new PaymentRepository(pool, authPool, orderingPool);
 
 // API Endpoints
-app.post('/api/payments', async (req, res) => {
-    try {
-        const payment = await paymentService.createPaymentIntent({
-            invoiceId: req.body.invoiceId,
-            amount: req.body.amount,
-            currency: req.body.currency
-        });
-        res.status(201).json(payment);
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to create payment' });
-    }
-});
+app.post('/api/payments',
+    serviceAuth(),
+    async (req, res) => {
+        try {
+            const success = await paymentRepository.createPaymentIntent({
+                invoiceId: req.body.invoiceId,
+                amount: req.body.amount,
+                currency: req.body.currency,
+                successUrl: req.body.successUrl,
+                cancelUrl: req.body.cancelUrl,
+                companyId: req.body.companyId
+            });
 
-app.get('/api/payments/:id', async (req, res) => {
-    try {
-        const payment = await paymentRepository.findById(req.params.id);
-        if (!payment) {
-            return res.status(404).json({ error: 'Payment not found' });
+            if (success) {
+                res.status(201).json({ success: true });
+            } else {
+                res.status(500).json({ success: false, error: 'Failed to create payment intent' });
+            }
+        } catch (error) {
+            console.error('Payment creation failed:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to create payment',
+                details: error instanceof Error ? error.message : 'Unknown error'
+            });
         }
-        res.json(payment);
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch payment' });
-    }
-});
+    });
 
 // Stripe webhook handler
 app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
@@ -54,26 +56,33 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
             process.env.STRIPE_WEBHOOK_SECRET ?? ''
         );
 
-        await paymentService.handleWebhook(event);
-        res.json({ received: true });
+        const redirectUrl = await paymentRepository.handleWebhook(event);
+        if (redirectUrl) {
+            res.redirect(redirectUrl);
+        } else {
+            res.status(400).json({ error: 'No redirect URL found' });
+        }
     } catch (error) {
         res.status(400).json({ error: 'Webhook signature verification failed' });
     }
 });
 
-// Payment page route
-app.get('/pay/:invoiceId', async (req, res) => {
+// Payment page endpoint
+app.get('/api/pay/:invoiceId', async (req, res) => {
     try {
-        // Here you would typically render a payment page
-        // For now, we'll just return payment details
-        const payment = await paymentRepository.findByInvoiceId(req.params.invoiceId);
-        if (!payment) {
-            return res.status(404).json({ error: 'Payment not found' });
+        console.log(req.params.invoiceId)
+        const result = await paymentRepository.getPaymentPage(req.params.invoiceId);
+        if (result.redirectUrl) {
+            res.redirect(result.redirectUrl);
+        } else {
+            res.status(404).json({ error: 'Payment not found' });
         }
-        res.json(payment);
     } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch payment details' });
+        console.error('Error getting payment page:', error);
+        res.status(500).json({ error: 'Failed to get payment page' });
     }
 });
 
-export default app; 
+app.listen(process.env.PORT, () => {
+    console.log("Payment Service running at port", process.env.PORT)
+});

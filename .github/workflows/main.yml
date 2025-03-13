@@ -3,7 +3,7 @@ name: Live Pipeline
 on:
   push:
     branches:
-      - main
+      - master
 
 jobs:
   deploy:
@@ -19,10 +19,9 @@ jobs:
     - name: Deploy
       run: |
         sshpass -p "${{ secrets.PWD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.USR }}@${{ secrets.HOST }} << 'EOF'
-          cd PapStore
+          cd payment-service
           git fetch
           git pull
           npm install
-          npm run build
-          npx pm2 restart 2
+          npx pm2 restart 4
         EOF

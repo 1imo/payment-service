@@ -51,6 +51,7 @@ export class PaymentRepository {
     }
 
     private convertAmountToCents(amount: number): number {
+        console.log(Math.round(amount * 100))
         return Math.round(amount * 100); // Convert pounds to pence
     }
 
@@ -115,7 +116,7 @@ export class PaymentRepository {
         try {
             // Get invoice details
             const result = await this.db.query(
-                'SELECT payment_intent_id, order_batch_id, amount, company_id, currency FROM invoices WHERE id = $1',
+                'SELECT payment_intent_id, amount, currency, order_batch_id, company_id FROM invoices WHERE id = $1',
                 [invoiceId]
             );
 
@@ -124,29 +125,25 @@ export class PaymentRepository {
             }
 
             const invoice = result.rows[0];
-            console.log("Invoice", invoice)
+            console.log(invoice, "INVOICE")
+            const currencyCode = this.convertCurrencySymbolToCode(invoice.currency);
+            console.log(currencyCode,)
 
+            // Get products from order batch
             const productIds = await this.orderingDb.query(
                 'SELECT DISTINCT product_id FROM "order" WHERE batch_id = $1',
                 [invoice.order_batch_id]
             );
+
+            console.log(productIds.rows, 'Product IDs')
 
             const products = await this.orderingDb.query(
                 'SELECT DISTINCT * FROM product WHERE id = ANY($1)',
                 [productIds.rows.map(row => row.product_id)]
             );
 
-            console.log(products)
+            console.log(products.rows, "Products")
 
-            const currencyCode = this.convertCurrencySymbolToCode(invoice.currency);
-            const amountInCents = this.convertAmountToCents(invoice.amount);
-
-            console.log('Processing payment:', {
-                amount: invoice.amount,
-                amountInCents,
-                currency: invoice.currency,
-                currencyCode
-            });
 
             // Get company-specific Stripe instance
             const stripe = await this.getStripeCredentials(invoice.company_id);
@@ -154,22 +151,23 @@ export class PaymentRepository {
             // Get the payment intent to access the metadata
             const paymentIntent = await stripe.paymentIntents.retrieve(invoice.payment_intent_id);
 
-            // Prepare line items for Checkout Session
+            // Create line items from products
             const lineItems = products.rows.map(product => ({
                 price_data: {
                     currency: currencyCode,
                     product_data: {
                         name: product.name,
-                        description: product.description,
+                        description: product.description
                     },
                     unit_amount: this.convertAmountToCents(product.price),
                 },
-                quantity: product.stock_quantity,
+                quantity: result.rows.find(item => item.name === product.name)?.quantity || 1
             }));
 
-            // Create a Checkout Session
+            console.log(lineItems, "Line Items")
+
+            // Create a Checkout Session with line items
             const session = await stripe.checkout.sessions.create({
-                payment_method_types: ['card'],
                 line_items: lineItems,
                 mode: 'payment',
                 success_url: paymentIntent.metadata.successUrl,
@@ -180,7 +178,7 @@ export class PaymentRepository {
                 }
             });
 
-            console.log('Created checkout session for company:', invoice.company_id);
+            console.log('Created checkout session with products for company:', invoice.company_id);
             return { redirectUrl: session.url };
         } catch (error) {
             console.error('Error creating checkout session:', error);

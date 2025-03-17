@@ -5,6 +5,7 @@ import { stripe } from './config/stripe';
 import { PaymentRepository } from './repositories/PaymentRepository';
 import { serviceAuth } from './middleware/serviceAuth';
 import { pool, authPool, orderingPool } from './config/database';
+import { createPaymentIntentLimiter, paymentPageLimiter } from './middleware/rateLimiter';
 
 dotenv.config();
 
@@ -19,6 +20,7 @@ const paymentRepository = new PaymentRepository(pool, authPool, orderingPool);
 // API Endpoints
 app.post('/api/payments',
     serviceAuth(),
+    createPaymentIntentLimiter,
     async (req, res) => {
         try {
             const success = await paymentRepository.createPaymentIntent({
@@ -68,20 +70,22 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
 });
 
 // Payment page endpoint
-app.get('/api/pay/:invoiceId', async (req, res) => {
-    try {
-        console.log(req.params.invoiceId)
-        const result = await paymentRepository.getPaymentPage(req.params.invoiceId);
-        if (result.redirectUrl) {
-            res.redirect(result.redirectUrl);
-        } else {
-            res.status(404).json({ error: 'Payment not found' });
+app.get('/api/pay/:invoiceId',
+    paymentPageLimiter,
+    async (req, res) => {
+        try {
+            console.log(req.params.invoiceId)
+            const result = await paymentRepository.getPaymentPage(req.params.invoiceId);
+            if (result.redirectUrl) {
+                res.redirect(result.redirectUrl);
+            } else {
+                res.status(404).json({ error: 'Payment not found' });
+            }
+        } catch (error) {
+            console.error('Error getting payment page:', error);
+            res.status(500).json({ error: 'Failed to get payment page' });
         }
-    } catch (error) {
-        console.error('Error getting payment page:', error);
-        res.status(500).json({ error: 'Failed to get payment page' });
-    }
-});
+    });
 
 app.listen(process.env.PORT, () => {
     console.log("Payment Service running at port", process.env.PORT)

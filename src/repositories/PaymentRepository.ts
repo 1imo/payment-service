@@ -120,7 +120,14 @@ export class PaymentRepository {
                 [invoiceId]
             );
 
+            const check = await this.db.query(
+                'SELECT payment_intent_id, amount, currency, order_batch_id, company_id FROM invoices'
+            );
+
+            console.log("HERE", invoiceId, check.rows)
+
             if (!result.rows[0]) {
+                console.log("returning")
                 return { redirectUrl: null };
             }
 
@@ -157,7 +164,7 @@ export class PaymentRepository {
                     currency: currencyCode,
                     product_data: {
                         name: product.name,
-                        description: product.description
+                        ...(product.description && { description: product.description })
                     },
                     unit_amount: this.convertAmountToCents(product.price),
                 },

@@ -8,6 +8,7 @@ interface PaymentIntent {
     companyId: string;
     successUrl: string;  // URL to redirect on successful payment
     cancelUrl: string;   // URL to redirect on cancelled/failed payment
+    referrerUrl?: string; // Optional referrer URL for cancel URL fallback
 }
 
 export class PaymentRepository {
@@ -112,7 +113,7 @@ export class PaymentRepository {
         return null;
     }
 
-    async getPaymentPage(invoiceId: string): Promise<{ redirectUrl: string | null }> {
+    async getPaymentPage(invoiceId: string, referrerUrl?: string): Promise<{ redirectUrl: string | null }> {
         try {
             // Get invoice details
             const result = await this.db.query(
@@ -151,37 +152,52 @@ export class PaymentRepository {
 
             console.log(products.rows, "Products")
 
-
             // Get company-specific Stripe instance
             const stripe = await this.getStripeCredentials(invoice.company_id);
 
             // Get the payment intent to access the metadata
             const paymentIntent = await stripe.paymentIntents.retrieve(invoice.payment_intent_id);
 
-            // Create line items from products
-            const lineItems = products.rows.map(product => ({
-                price_data: {
-                    currency: currencyCode,
-                    product_data: {
-                        name: product.name,
-                        ...(product.description && { description: product.description })
-                    },
-                    unit_amount: this.convertAmountToCents(product.price),
-                },
-                quantity: result.rows.find(item => item.name === product.name)?.quantity || 1
-            }));
+            console.log(paymentIntent, "Payment Intent")
 
-            console.log(lineItems, "Line Items")
+            let discountAmount = 0;
+            const lineItems = products.rows
+                .map(product => {
+                    if (product.price < 0) {
+                        discountAmount += Math.abs(product.price);
+                        return undefined;
+                    }
+                    
+                    const item: Stripe.Checkout.SessionCreateParams.LineItem = {
+                        price_data: {
+                            currency: currencyCode,
+                            product_data: {
+                                name: product.name,
+                                ...(product.description && { description: product.description })
+                            },
+                            unit_amount: this.convertAmountToCents(product.price),
+                        },
+                        quantity: result.rows.find(item => item.name === product.name)?.quantity || 1
+                    };
+                    return item;
+                })
+                .filter((item): item is Stripe.Checkout.SessionCreateParams.LineItem => 
+                    item !== undefined
+                ) as Stripe.Checkout.SessionCreateParams.LineItem[];
 
-            // Create a Checkout Session with line items
+            // Create a Checkout Session with line items and discount
             const session = await stripe.checkout.sessions.create({
                 line_items: lineItems,
                 mode: 'payment',
                 success_url: paymentIntent.metadata.successUrl,
-                cancel_url: paymentIntent.metadata.cancelUrl,
+                cancel_url: referrerUrl || paymentIntent.metadata.cancelUrl,
+                discounts: discountAmount > 0 ? [{
+                    coupon: await this.createDiscountCoupon(stripe, discountAmount, currencyCode)
+                }] : undefined,
                 metadata: {
                     invoiceId: invoiceId,
-                    companyId: invoice.company_id
+                    companyId: invoice.company_id,
+                    returnUrl: referrerUrl || null
                 }
             });
 
@@ -191,5 +207,15 @@ export class PaymentRepository {
             console.error('Error creating checkout session:', error);
             throw error;
         }
+    }
+
+    private async createDiscountCoupon(stripe: Stripe, amount: number, currency: string): Promise<string> {
+        const coupon = await stripe.coupons.create({
+            amount_off: this.convertAmountToCents(amount),
+            currency: currency,
+            duration: 'once'
+        });
+        
+        return coupon.id;
     }
 } 

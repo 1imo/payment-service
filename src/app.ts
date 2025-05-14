@@ -74,8 +74,21 @@ app.get('/api/pay/:invoiceId',
     paymentPageLimiter,
     async (req, res) => {
         try {
-            console.log(req.params.invoiceId)
-            const result = await paymentRepository.getPaymentPage(req.params.invoiceId);
+            console.log('Invoice ID:', req.params.invoiceId);
+            console.log('Referer header:', req.get('Referer'));
+            console.log('Origin header:', req.header('Origin'));
+            console.log('Original URL:', req.originalUrl);
+            
+            // Always construct the full path to the invoice view
+            const baseUrl = req.get('Referer')?.replace(/\/+$/, '') || `${req.protocol}://${req.get('host')}`;
+            const returnUrl = `${baseUrl}/api/invoices/${req.params.invoiceId}/view`;
+            
+            console.log('Using return URL:', returnUrl);
+            
+            const result = await paymentRepository.getPaymentPage(
+                req.params.invoiceId,
+                returnUrl
+            );
             if (result.redirectUrl) {
                 res.redirect(result.redirectUrl);
             } else {
